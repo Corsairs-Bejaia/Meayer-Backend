@@ -17,7 +17,8 @@ export class WebhooksService {
   ) {
     const apiKey = this.config.get<string>('webhooks.svixApiKey');
     if (apiKey) {
-      this.svix = new Svix(apiKey);
+      const serverUrl = this.config.get<string>('webhooks.svixServerUrl');
+      this.svix = new Svix(apiKey, serverUrl ? { serverUrl } : undefined);
     } else {
       this.logger.warn('SVIX_API_KEY not set — webhooks disabled');
     }
