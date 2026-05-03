@@ -6,7 +6,8 @@ export default registerAs('app', () => ({
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3000',
   // ── Portal ────────────────────────────────────────────────────────────────
   // Base URL of the doctor-facing portal frontend (e.g. https://verify.meayar.dz)
-  portalBaseUrl: process.env.PORTAL_BASE_URL ?? 'http://localhost:3001',
+  portalBaseUrl:
+    process.env.PORTAL_BASE_URL ?? 'https://frontend.bensefiayazid.workers.dev',
   // Secret used to HMAC-sign the redirect URL returned to the tenant after completion.
   // Set to a long random string in production. Tenants use this to verify the redirect.
   portalSigningSecret: process.env.PORTAL_SIGNING_SECRET ?? '',

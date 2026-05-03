@@ -101,6 +101,45 @@ export class PortalService {
     return this.documents.upload(file, { ...dto, verificationId }, tenantId);
   }
 
+  // ─── Bulk upload: upload multiple documents in one request ───────────────
+  // Each entry in `metaList` maps 1-to-1 with the corresponding file in `files`.
+  // Results are returned per-file so the portal can report partial failures.
+
+  async bulkUploadDocuments(
+    verificationId: string,
+    tenantId: string,
+    files: Express.Multer.File[],
+    metaList: Array<{ docType: string; templateId?: string }>,
+  ) {
+    const results = await Promise.allSettled(
+      files.map((file, i) => {
+        const meta = metaList[i] ?? metaList[metaList.length - 1];
+        return this.documents.upload(
+          file,
+          { ...meta, verificationId },
+          tenantId,
+        );
+      }),
+    );
+
+    const uploaded: unknown[] = [];
+    const failed: Array<{ index: number; error: string }> = [];
+
+    results.forEach((result, index) => {
+      if (result.status === 'fulfilled') {
+        uploaded.push(result.value);
+      } else {
+        const message =
+          result.reason instanceof Error
+            ? result.reason.message
+            : String(result.reason);
+        failed.push({ index, error: message });
+      }
+    });
+
+    return { uploaded, failed, total: files.length };
+  }
+
   // ─── Submit: enqueue the pipeline job ─────────────────────────────────────
 
   async submit(verificationId: string, tenantId: string) {

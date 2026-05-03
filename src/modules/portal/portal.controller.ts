@@ -8,11 +8,13 @@ import {
   UseGuards,
   UseInterceptors,
   UploadedFile,
+  UploadedFiles,
   HttpCode,
   HttpStatus,
+  BadRequestException,
 } from '@nestjs/common';
 import type { Response } from 'express';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
 import {
   ApiTags,
   ApiOperation,
@@ -27,7 +29,8 @@ import { SessionTokenGuard } from '@core/guards/session-token.guard';
 import { SessionVerification } from '@core/decorators/session-verification.decorator';
 import type { SessionContext } from '@core/guards/session-token.guard';
 import { ALLOWED_DOC_TYPES } from '@modules/documents/dto/upload-document.dto';
-import { IsString, IsOptional, IsIn } from 'class-validator';
+import { IsString, IsOptional, IsIn, IsArray, ValidateNested, ArrayMaxSize } from 'class-validator';
+import { Type } from 'class-transformer';
 import { ApiPropertyOptional, ApiProperty } from '@nestjs/swagger';
 import { PortalService } from './portal.service';
 
@@ -43,6 +46,34 @@ class PortalUploadDto {
   @IsOptional()
   @IsString()
   templateId?: string;
+}
+
+// ── Bulk upload item (one entry per file) ────────────────────────────────────
+
+class BulkUploadItemDto {
+  @ApiProperty({ enum: ALLOWED_DOC_TYPES })
+  @IsString()
+  @IsIn(ALLOWED_DOC_TYPES)
+  docType!: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  templateId?: string;
+}
+
+class PortalBulkUploadDto {
+  @ApiProperty({
+    description:
+      'JSON-encoded array of metadata objects, one per file. ' +
+      'Example: `[{"docType":"diploma"},{"docType":"national_id"}]`',
+    type: 'string',
+  })
+  @IsArray()
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => BulkUploadItemDto)
+  metadata!: BulkUploadItemDto[];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -129,6 +160,97 @@ export class PortalController {
       session.tenantId,
       file,
       dto,
+    );
+  }
+
+  // ── POST /portal/documents/bulk-upload ────────────────────────────────────
+
+  @Post('documents/bulk-upload')
+  @UseGuards(SessionTokenGuard)
+  @UseInterceptors(
+    FilesInterceptor('files', 10, {
+      limits: { fileSize: 20 * 1024 * 1024 },
+      storage: undefined, // memory storage
+    }),
+  )
+  @ApiConsumes('multipart/form-data')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    summary: 'Bulk-upload multiple documents from the portal',
+    description:
+      'Upload up to **10 files** in a single request and attach them to the ' +
+      'verification bound to the session.\n\n' +
+      'Supply a `metadata` field containing a **JSON-encoded array** of ' +
+      '`{docType, templateId?}` objects, one entry per file (indexed by position).\n\n' +
+      'Results are returned per-file: `uploaded` lists successes, `failed` lists ' +
+      'any errors by file index so the portal can report partial failures.',
+  })
+  @ApiHeader({
+    name: 'X-Session-Token',
+    description: '64-char hex session token',
+    required: true,
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['files', 'metadata'],
+      properties: {
+        files: {
+          type: 'array',
+          items: { type: 'string', format: 'binary' },
+          maxItems: 10,
+        },
+        metadata: {
+          type: 'string',
+          description:
+            'JSON array of {docType, templateId?}, one per file',
+          example: '[{"docType":"diploma"},{"docType":"national_id"}]',
+        },
+      },
+    },
+  })
+  @ApiResponse({
+    status: HttpStatus.CREATED,
+    description: 'Bulk upload result',
+    schema: {
+      example: {
+        uploaded: [{ id: 'clx9doc00001', docType: 'diploma' }],
+        failed: [{ index: 1, error: 'Unsupported file type. Allowed: JPEG, PNG, PDF' }],
+        total: 2,
+      },
+    },
+  })
+  @ApiResponse({
+    status: HttpStatus.UNAUTHORIZED,
+    description: 'Invalid or expired session',
+  })
+  async bulkUploadDocuments(
+    @UploadedFiles() files: Express.Multer.File[],
+    @Body('metadata') rawMetadata: string,
+    @SessionVerification() session: SessionContext,
+  ) {
+    if (!files || files.length === 0) {
+      throw new BadRequestException('At least one file is required');
+    }
+
+    let metaList: Array<{ docType: string; templateId?: string }>;
+    try {
+      metaList = JSON.parse(rawMetadata) as typeof metaList;
+    } catch {
+      throw new BadRequestException(
+        'metadata must be a valid JSON array of {docType, templateId?} objects',
+      );
+    }
+
+    if (!Array.isArray(metaList) || metaList.length === 0) {
+      throw new BadRequestException('metadata must be a non-empty array');
+    }
+
+    return this.portalService.bulkUploadDocuments(
+      session.verificationId,
+      session.tenantId,
+      files,
+      metaList,
     );
   }
 
